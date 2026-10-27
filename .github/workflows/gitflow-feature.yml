@@ -1,0 +1,43 @@
+name: GitFlow Feature Build
+
+# GitFlow feature branch automation:
+#
+#   - Pushes to `feature_**` branches trigger a compile-only build on CI,
+#     verifying that the branch builds cleanly before merging into `beta`.
+#
+#   - No artifacts are published and no release is created. Packaging and
+#     releasing is reserved for the `beta` branch (see gitflow.yml).
+#
+#   - Local development remains limited to compilation and test runs
+#     (`make build` / `make test`).
+
+on:
+  push:
+    branches:
+      - 'feature_dev'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MAVEN_OPTS: -Xmx4g
+
+jobs:
+  compile:
+    name: Compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+
+      - name: Compile
+        # Feature branches are compile-verified only; Tests are run locally.
+        run: mvn -B -ntp package -DskipTests -T1C

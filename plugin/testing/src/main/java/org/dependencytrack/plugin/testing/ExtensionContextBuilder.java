@@ -24,11 +24,17 @@ import org.dependencytrack.plugin.api.ExtensionContext;
 import org.dependencytrack.plugin.api.config.ConfigRegistry;
 import org.dependencytrack.plugin.api.storage.KeyValueStore;
 import org.dependencytrack.support.net.OutboundConnectionPolicy;
+import org.jdbi.v3.core.Jdbi;
 import org.jspecify.annotations.Nullable;
 
+import javax.sql.DataSource;
+import java.io.PrintWriter;
 import java.net.http.HttpClient;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Logger;
 
 /// Builds [ExtensionContext]s for tests, defaulting any service not explicitly provided.
 ///
@@ -40,6 +46,7 @@ public final class ExtensionContextBuilder {
     private @Nullable KeyValueStore keyValueStore;
     private @Nullable HttpClient httpClient;
     private @Nullable OutboundConnectionPolicy outboundConnectionPolicy;
+    private @Nullable Jdbi jdbi;
 
     public ExtensionContextBuilder withConfigRegistry(ConfigRegistry configRegistry) {
         this.configRegistry = configRegistry;
@@ -66,14 +73,67 @@ public final class ExtensionContextBuilder {
         return this;
     }
 
+    public ExtensionContextBuilder withJdbi(Jdbi jdbi) {
+        this.jdbi = jdbi;
+        return this;
+    }
+
     public ExtensionContext build() {
         return new ExtensionContext(
                 configRegistry != null ? configRegistry : new MockConfigRegistry(Map.of()),
                 cacheManager != null ? cacheManager : new NoopCacheManager(),
                 keyValueStore != null ? keyValueStore : new MockKeyValueStore(),
                 httpClient != null ? httpClient : HttpClient.newHttpClient(),
-                outboundConnectionPolicy != null
-                        ? outboundConnectionPolicy
-                        : OutboundConnectionPolicy.of(List.of("*")));
+                outboundConnectionPolicy != null ? outboundConnectionPolicy : OutboundConnectionPolicy.of(List.of("*")),
+                jdbi != null ? jdbi : Jdbi.create(new UnsupportedDataSource()));
+    }
+
+    private static final class UnsupportedDataSource implements DataSource {
+
+        private UnsupportedOperationException unsupported() {
+            return new UnsupportedOperationException(
+                    "JDBI was not provided via ExtensionContextBuilder#withJdbi; " + "this data source cannot be used");
+        }
+
+        @Override
+        public Connection getConnection() {
+            throw unsupported();
+        }
+
+        @Override
+        public Connection getConnection(String username, String password) {
+            throw unsupported();
+        }
+
+        @Override
+        public PrintWriter getLogWriter() {
+            throw unsupported();
+        }
+
+        @Override
+        public void setLogWriter(PrintWriter out) {}
+
+        @Override
+        public void setLoginTimeout(int seconds) {}
+
+        @Override
+        public int getLoginTimeout() {
+            return 0;
+        }
+
+        @Override
+        public Logger getParentLogger() {
+            return Logger.getGlobal();
+        }
+
+        @Override
+        public <T> T unwrap(Class<T> iface) throws SQLException {
+            throw unsupported();
+        }
+
+        @Override
+        public boolean isWrapperFor(Class<?> iface) {
+            return false;
+        }
     }
 }
