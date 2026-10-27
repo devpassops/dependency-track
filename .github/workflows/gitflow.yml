@@ -1,0 +1,71 @@
+name: GitFlow Release
+
+# GitFlow release automation:
+#
+#   - Push to the `beta` branch triggers a full build on CI.
+#     Build artifacts (apiserver distribution and plugin JARs) are
+#     automatically packaged into a GitHub Release.
+#
+#   - Local development is limited to compilation and test runs
+#     (`make build` / `make test`). Packaging and releasing is done
+#     on CI only, by merging into `beta`.
+
+on:
+  push:
+    branches:
+      - beta
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  MAVEN_OPTS: -Xmx4g
+
+jobs:
+  build-and-release:
+    name: Build and release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+
+      - name: Build and package
+        # CI performs compilation and packaging only; Tests are run locally.
+        run: mvn -B -ntp -Pdist package -DskipTests -T1C
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp apiserver/target/dependency-track-apiserver*.jar dist/ || true
+          cp apiserver/target/dependency-track-apiserver*.zip dist/ || true
+          cp plugins/offline-data/target/plugin-offline-data-*.jar dist/ || true
+          ls -la dist/
+
+      - name: Determine project version
+        id: version
+        run: echo "version=$(mvn -B -q -DforceStdout help:evaluate -Dexpression=project.version)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="beta-${{ steps.version.outputs.version }}-${GITHUB_SHA::8}"
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists; Skipping"
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Beta ${{ steps.version.outputs.version }}" \
+            --notes "Automated build of branch \`beta\` at commit ${GITHUB_SHA::8}." \
+            dist/*

@@ -87,6 +87,7 @@
         <module>secret-management</module>
         <module>vuln-analysis</module>
         <module>vuln-data-source</module>
+        <module>plugins/offline-data</module>
         <module>apiserver</module>
         <module>e2e</module>
         <module>coverage-report</module>

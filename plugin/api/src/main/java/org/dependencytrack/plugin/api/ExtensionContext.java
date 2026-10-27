@@ -22,6 +22,7 @@ import org.dependencytrack.cache.api.CacheManager;
 import org.dependencytrack.plugin.api.config.ConfigRegistry;
 import org.dependencytrack.plugin.api.storage.KeyValueStore;
 import org.dependencytrack.support.net.OutboundConnectionPolicy;
+import org.jdbi.v3.core.Jdbi;
 
 import java.net.http.HttpClient;
 
@@ -38,13 +39,17 @@ import static java.util.Objects.requireNonNull;
 /// @param httpClient     HTTP client configured according to the host application's settings.
 /// @param outboundConnectionPolicy Policy for outbound connections.
 /// To be used for all connections that can't go through `httpClient`, which already enforces it.
+/// @param jdbi           Access to the application database. Extensions are expected to use
+/// this with care, and stick to their own tables or well-known ones. Consider using
+/// [KeyValueStore] for simple persistence needs instead.
 /// @since 5.2.0
 public record ExtensionContext(
         ConfigRegistry configRegistry,
         CacheManager cacheManager,
         KeyValueStore keyValueStore,
         HttpClient httpClient,
-        OutboundConnectionPolicy outboundConnectionPolicy) {
+        OutboundConnectionPolicy outboundConnectionPolicy,
+        Jdbi jdbi) {
 
     public ExtensionContext {
         requireNonNull(configRegistry, "configRegistry must not be null");
@@ -52,5 +57,6 @@ public record ExtensionContext(
         requireNonNull(keyValueStore, "keyValueStore must not be null");
         requireNonNull(httpClient, "httpClient must not be null");
         requireNonNull(outboundConnectionPolicy, "outboundConnectionPolicy must not be null");
+        requireNonNull(jdbi, "jdbi must not be null");
     }
 }

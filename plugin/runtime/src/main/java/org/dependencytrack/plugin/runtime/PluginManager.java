@@ -238,26 +238,44 @@ public class PluginManager implements Closeable {
     }
 
     public void loadPlugins(Collection<Plugin> plugins) {
+        loadPlugins(plugins, false);
+    }
+
+    /**
+     * Load the given plugins.
+     * <p>
+     * When {@code allowOverrides} is set, extensions of the plugins being loaded take
+     * precedence over already loaded extensions with the same identity (extension point
+     * and extension name). The previously loaded extension is closed and replaced.
+     * <p>
+     * This is intended for externally supplied plugins, such as JARs loaded from a
+     * plugin directory, to override functionality of built-in plugins.
+     *
+     * @param plugins         Plugins to load.
+     * @param allowOverrides  Whether already loaded extensions may be overridden.
+     * @since 5.3.0
+     */
+    public void loadPlugins(Collection<Plugin> plugins, boolean allowOverrides) {
         lock.lock();
         try {
-            if (!loadedPluginByClass.isEmpty()) {
+            if (!loadedPluginByClass.isEmpty() && !allowOverrides) {
                 throw new IllegalStateException("Plugins were already loaded; Unload them first");
             }
 
-            loadPluginsLocked(plugins);
+            loadPluginsLocked(plugins, allowOverrides);
         } finally {
             lock.unlock();
         }
     }
 
-    private void loadPluginsLocked(Collection<Plugin> plugins) {
+    private void loadPluginsLocked(Collection<Plugin> plugins, boolean allowOverrides) {
         assert lock.isHeldByCurrentThread() : "Lock is not held by current thread";
 
         LOGGER.debug("Loading plugins");
         for (final Plugin plugin : plugins) {
             try (var _ = MDC.putCloseable(MDC_PLUGIN, plugin.getClass().getName())) {
                 LOGGER.debug("Loading plugin");
-                loadExtensionsForPlugin(plugin);
+                loadExtensionsForPlugin(plugin, allowOverrides);
 
                 LOGGER.debug("Plugin loaded successfully");
                 loadedPluginByClass.put(plugin.getClass(), plugin);
@@ -265,7 +283,7 @@ public class PluginManager implements Closeable {
         }
     }
 
-    private void loadExtensionsForPlugin(Plugin plugin) {
+    private void loadExtensionsForPlugin(Plugin plugin, boolean allowOverrides) {
         final Collection<? extends ExtensionFactory<? extends ExtensionPoint>> extensionFactories =
                 plugin.extensionFactories();
         if (extensionFactories == null || extensionFactories.isEmpty()) {
@@ -311,7 +329,7 @@ public class PluginManager implements Closeable {
                     var _ = MDC.putCloseable(MDC_EXTENSION_NAME, extensionFactory.extensionName());
                     var _ = MDC.putCloseable(
                             MDC_EXTENSION, extensionFactory.extensionClass().getName())) {
-                loadExtension(plugin, extensionFactory, extensionPointMetadata);
+                loadExtension(plugin, extensionFactory, extensionPointMetadata, allowOverrides);
             }
         }
     }
@@ -319,15 +337,21 @@ public class PluginManager implements Closeable {
     private void loadExtension(
             Plugin plugin,
             ExtensionFactory<? extends ExtensionPoint> extensionFactory,
-            ExtensionPointMetadata extensionPointMetadata) {
+            ExtensionPointMetadata extensionPointMetadata,
+            boolean allowOverrides) {
         final var extensionIdentity =
                 new ExtensionIdentity(extensionPointMetadata.clazz(), extensionFactory.extensionName());
 
-        // Prevent the same extension from being loaded from multiple plugins.
+        // Prevent the same extension from being loaded from multiple plugins,
+        // unless the caller explicitly allows the extension to be overridden.
         if (pluginByExtensionIdentity.containsKey(extensionIdentity)) {
-            final Plugin conflictingPlugin = pluginByExtensionIdentity.get(extensionIdentity);
-            throw new IllegalStateException("Extension was already loaded from plugin %s"
-                    .formatted(conflictingPlugin.getClass().getName()));
+            if (!allowOverrides) {
+                final Plugin conflictingPlugin = pluginByExtensionIdentity.get(extensionIdentity);
+                throw new IllegalStateException("Extension was already loaded from plugin %s"
+                        .formatted(conflictingPlugin.getClass().getName()));
+            }
+
+            overrideExtensionLocked(extensionIdentity);
         }
 
         if (extensionFactory.priority() < PRIORITY_HIGHEST) {
@@ -379,7 +403,7 @@ public class PluginManager implements Closeable {
                 this.cacheManager, "%s.%s".formatted(extensionPointMetadata.name(), extensionIdentity.name()));
 
         final var extensionContext = new ExtensionContext(
-                configRegistry, extensionCacheManager, keyValueStore, httpClient, outboundConnectionPolicy);
+                configRegistry, extensionCacheManager, keyValueStore, httpClient, outboundConnectionPolicy, jdbi);
 
         LOGGER.debug("Initializing extension");
         try {
@@ -397,6 +421,38 @@ public class PluginManager implements Closeable {
                 .add(extensionFactory.extensionName());
         factoryByExtensionIdentity.put(extensionIdentity, extensionFactory);
         pluginByExtensionIdentity.put(extensionIdentity, plugin);
+    }
+
+    private void overrideExtensionLocked(ExtensionIdentity extensionIdentity) {
+        assert lock.isHeldByCurrentThread() : "Lock is not held by current thread";
+
+        final ExtensionFactory<?> overriddenFactory = factoryByExtensionIdentity.remove(extensionIdentity);
+        final Plugin overriddenPlugin = pluginByExtensionIdentity.remove(extensionIdentity);
+
+        LOGGER.warn("Overriding extension %s#%s previously loaded from plugin %s"
+                .formatted(
+                        extensionIdentity.extensionPointClass().getName(),
+                        extensionIdentity.name(),
+                        overriddenPlugin != null ? overriddenPlugin.getClass().getName() : "<unknown>"));
+
+        if (overriddenFactory != null) {
+            try {
+                overriddenFactory.close();
+            } catch (RuntimeException e) {
+                LOGGER.warn("Failed to close overridden extension", e);
+            }
+        }
+
+        if (overriddenPlugin != null) {
+            final List<ExtensionFactory<?>> overriddenFactories = factoriesByPlugin.get(overriddenPlugin);
+            if (overriddenFactories != null) {
+                overriddenFactories.remove(overriddenFactory);
+                if (overriddenFactories.isEmpty()) {
+                    factoriesByPlugin.remove(overriddenPlugin);
+                    loadedPluginByClass.remove(overriddenPlugin.getClass());
+                }
+            }
+        }
     }
 
     private ExtensionPointMetadata requireKnownExtensionPoint(Class<? extends ExtensionPoint> extensionPointClass) {
