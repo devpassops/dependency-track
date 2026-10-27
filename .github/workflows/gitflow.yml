@@ -13,7 +13,7 @@ name: GitFlow Release
 on:
   push:
     branches:
-      - beta
+      - feature_beta
   workflow_dispatch:
 
 permissions:
